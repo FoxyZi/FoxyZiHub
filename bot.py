@@ -1,5 +1,7 @@
 import json
 import asyncio
+import os
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -24,6 +26,23 @@ dp = Dispatcher()
 # Временные хранилища
 temp_games = {} 
 admin_states = {} 
+
+# ═══════════════════════════════════════════
+# 🌍 ФЕЙКОВЫЙ СЕРВЕР ДЛЯ RENDER
+# ═══════════════════════════════════════════
+
+async def health_check(request):
+    return web.Response(text="🦊 FoxyZiHub is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.add_routes([web.get('/', health_check)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render выдает порт через переменную окружения, или используем 8080
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
 
 # ═══════════════════════════════════════════
 # 📂 БАЗА ДАННЫХ
@@ -76,19 +95,14 @@ def find_user_in_db(query):
 # ═══════════════════════════════════════════
 
 def main_menu(user_id):
-    # Основные кнопки
     buttons = [
         [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile")],
         [InlineKeyboardButton(text="🎮 Список игр", callback_data="games_list")]
     ]
-    
-    # Кнопка Админа (вставляем ПЕРЕД каналом)
     if user_id == ADMIN_ID:
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_open_menu")])
 
-    # Кнопка Канала (ВСЕГДА ПОСЛЕДНЯЯ)
     buttons.append([InlineKeyboardButton(text="📢 Канал", url="https://t.me/FoxyZiHub")])
-        
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.message(Command("start"))
@@ -420,6 +434,8 @@ async def finish_adding(callback: types.CallbackQuery):
 
 async def main():
     print("🦊 FoxyZiHub запущен!")
+    # Запускаем и веб-сервер (чтобы Render не ругался), и бота
+    await start_web_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
