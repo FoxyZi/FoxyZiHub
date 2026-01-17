@@ -182,6 +182,7 @@ async def open_admin_panel(message: types.Message, edit=False):
     admin_states[uid] = None
     
     buttons = [
+        [InlineKeyboardButton(text="📢 Сделать оповещение", callback_data="admin_broadcast_start")],
         [InlineKeyboardButton(text="👥 Управление ролями", callback_data="admin_roles_menu")],
         [InlineKeyboardButton(text="🎮 Управление играми", callback_data="admin_games")],
         [InlineKeyboardButton(text="📜 Логи действий", callback_data="admin_logs_0")]
@@ -211,7 +212,24 @@ async def admin_back_main(callback: types.CallbackQuery):
     await open_admin_panel(callback.message, edit=True)
 
 # ═══════════════════════════════════════════
-# 📜 ЛОГИ (Только просмотр)
+# 📢 ОПОВЕЩЕНИЯ (НОВОЕ!)
+# ═══════════════════════════════════════════
+@dp.callback_query(F.data == "admin_broadcast_start")
+async def broadcast_start(callback: types.CallbackQuery):
+    if not is_admin_or_owner(callback.from_user.id): return
+    await callback.answer()
+    
+    admin_states[callback.from_user.id] = {"type": "broadcast", "msg_id": callback.message.message_id}
+    
+    await callback.message.edit_text(
+        "📢 <b>Рассылка оповещения</b>\n\n"
+        "Напиши текст сообщения, который получат <b>все пользователи</b> бота.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")]])
+    )
+
+# ═══════════════════════════════════════════
+# 📜 ЛОГИ
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data.startswith("admin_logs_"))
 async def show_logs(callback: types.CallbackQuery):
@@ -564,7 +582,49 @@ async def handle_input(message: types.Message):
         
         msg_id = state.get("msg_id")
 
-        if state["type"] == "waiting_user":
+        if state["type"] == "broadcast":
+            text_to_send = message.text
+            admin_states[message.from_user.id] = None
+            
+            users = load_data("users.json", {})
+            success_count = 0
+            blocked_count = 0
+            
+            # Показываем, что начали
+            try:
+                await bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=msg_id,
+                    text="⏳ <b>Рассылка запущена...</b>",
+                    parse_mode="HTML"
+                )
+            except: pass
+
+            for uid in users:
+                try:
+                    # Добавляем заголовок
+                    full_text = f"📢 <b>ОПОВЕЩЕНИЕ</b>\n\n{text_to_send}"
+                    await bot.send_message(uid, full_text, parse_mode="HTML")
+                    success_count += 1
+                    await asyncio.sleep(0.05) # Анти-спам задержка
+                except:
+                    blocked_count += 1
+            
+            add_log(message.from_user.full_name, f"Рассылка: {text_to_send[:20]}...")
+            
+            # Отчет
+            report = f"✅ <b>Рассылка завершена!</b>\n\n📤 Отправлено: {success_count}\n🚫 Недоставлено: {blocked_count}"
+            try:
+                await bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=msg_id,
+                    text=report,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back")]])
+                )
+            except: pass
+
+        elif state["type"] == "waiting_user":
             if message.document: return 
             uid, user_data = find_user_in_db(message.text)
             
