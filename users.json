@@ -1,7 +1,10 @@
 {
   "6057537422": {
-    "name": "Фёдор Великий",
+    "name": "Федор",
     "username": "foxyzi",
-    "role": "Главный Лис 🦊"
+    "privilege": "Главный Лис 🦊",
+    "has_beta": true,
+    "unlocked_prefixes": [],
+    "active_prefix": null
   }
 }
