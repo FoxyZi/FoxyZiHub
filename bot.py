@@ -1,7 +1,8 @@
 import json
 import asyncio
 import os
-import uuid
+import sys
+import logging # Добавлено логирование
 from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
@@ -9,17 +10,23 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 
 # ═══════════════════════════════════════════
-# ⚙️ НАСТРОЙКИ
+# ⚙️ НАСТРОЙКИ ЛОГИРОВАНИЯ (Чтобы видеть ошибки в Render)
+# ═══════════════════════════════════════════
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════
+# ⚙️ НАСТРОЙКИ БОТА
 # ═══════════════════════════════════════════
 
 BOT_TOKEN = "8261897648:AAE1P80ALDJQD9xtJv3nTNA_GLdZlalaVb8"
-OWNER_ID = 6057537422  # ID ГЛАВНОГО ЛИСА
+OWNER_ID = 6057537422
 
-# Привилегии
-RANK_PLAYER = "Игрок"
-RANK_VIP = "VIP 💎"
-RANK_ADMIN = "Администратор 👑"
-RANK_OWNER = "Главный Лис 🦊"
+# Роли
+ROLE_PLAYER = "Игрок 👤"
+ROLE_BETA = "Бета-тестер 🧪"
+ROLE_ADMIN = "Администратор 👑"
+ROLE_OWNER = "Главный Лис 🦊"
 
 # Доступ
 ACCESS_PUBLIC = "public"
@@ -34,20 +41,26 @@ temp_games = {}
 admin_states = {} 
 
 # ═══════════════════════════════════════════
-# 🌍 ФЕЙКОВЫЙ СЕРВЕР
+# 🌍 ФЕЙКОВЫЙ СЕРВЕР (ИСПРАВЛЕННЫЙ)
 # ═══════════════════════════════════════════
-async def health_check(request): return web.Response(text="🦊 FoxyZiHub Core is active!")
+async def health_check(request):
+    return web.Response(text="🦊 FoxyZiHub is alive!", status=200)
+
 async def start_web_server():
     app = web.Application()
     app.add_routes([web.get('/', health_check)])
     runner = web.AppRunner(app)
     await runner.setup()
+    
+    # Получаем порт от Render или используем 8080
     port = int(os.environ.get("PORT", 8080))
+    logger.info(f"🌍 Запускаю веб-сервер на порту: {port}")
+    
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
 # ═══════════════════════════════════════════
-# 📂 БАЗА ДАННЫХ И УТИЛИТЫ
+# 📂 БАЗА ДАННЫХ И ЛОГИ
 # ═══════════════════════════════════════════
 def load_data(filename, default):
     try:
@@ -61,62 +74,24 @@ def save_data(filename, data):
 def add_log(admin_name, text):
     logs = load_data("logs.json", [])
     timestamp = datetime.now().strftime("%d.%m %H:%M")
-    logs.insert(0, f"[{timestamp}] 👤 {admin_name}: {text}")
+    entry = f"[{timestamp}] 👤 {admin_name}: {text}"
+    logs.insert(0, entry)
     if len(logs) > 200: logs.pop()
     save_data("logs.json", logs)
 
-# --- ПРОВЕРКА ТЕХНИЧЕСКИХ РАБОТ ---
-async def check_maintenance(event, user_id):
-    settings = load_data("settings.json", {"maintenance": False})
-    if not settings.get("maintenance", False): return True
-    if user_id == OWNER_ID: return True
-    if isinstance(event, types.CallbackQuery):
-        try: await event.answer() 
-        except: pass
-    return False
-
-# --- ПОЛЬЗОВАТЕЛИ ---
 def get_user(user_id):
     users = load_data("users.json", {})
-    uid = str(user_id)
-    default_user = {
-        "name": "Неизвестный",
-        "username": "None",
-        "privilege": RANK_PLAYER,
-        "has_beta": False,
-        "unlocked_prefixes": [],
-        "active_prefix": None
-    }
-    user = users.get(uid, default_user)
-    
-    if "role" in user:
-        user["privilege"] = RANK_PLAYER
-        user["has_beta"] = False
-        del user["role"]
-        
-    if user_id == OWNER_ID:
-        user["privilege"] = RANK_OWNER
-        user["has_beta"] = True
-        
-    return user
+    user_data = users.get(str(user_id), {"role": ROLE_PLAYER, "name": "Неизвестный", "username": "None"})
+    if user_id == OWNER_ID: user_data["role"] = ROLE_OWNER
+    return user_data
 
-def update_user_info(user_tg):
+def update_user(user):
     users = load_data("users.json", {})
-    uid = str(user_tg.id)
-    user_data = users.get(uid, {
-        "privilege": RANK_PLAYER,
-        "has_beta": False,
-        "unlocked_prefixes": [],
-        "active_prefix": None
-    })
-    
-    if user_tg.id == OWNER_ID: 
-        user_data["privilege"] = RANK_OWNER
-        user_data["has_beta"] = True
-
-    user_data["name"] = user_tg.full_name
-    user_data["username"] = user_tg.username
-    users[uid] = user_data
+    user_id = str(user.id)
+    current_role = users.get(user_id, {}).get("role", ROLE_PLAYER)
+    if user.id == OWNER_ID: current_role = ROLE_OWNER
+    elif current_role == ROLE_OWNER: current_role = ROLE_PLAYER
+    users[user_id] = {"name": user.full_name, "username": user.username, "role": current_role}
     save_data("users.json", users)
 
 def find_user_in_db(query):
@@ -128,20 +103,7 @@ def find_user_in_db(query):
 
 def is_admin_or_owner(user_id):
     user = get_user(user_id)
-    return user["privilege"] in [RANK_ADMIN, RANK_OWNER]
-
-def get_user_display_name(user_id):
-    user = get_user(user_id)
-    prefix_text = ""
-    prefixes = load_data("prefixes.json", {"list": []})["list"]
-    
-    if user.get("active_prefix"):
-        for p in prefixes:
-            if p["id"] == user["active_prefix"]:
-                prefix_text = f"<b>{p['text']}</b> "
-                break
-                
-    return f"{prefix_text}{user['name']}"
+    return user["role"] == ROLE_ADMIN
 
 # ═══════════════════════════════════════════
 # 🏠 ГЛАВНОЕ МЕНЮ
@@ -160,7 +122,7 @@ def main_menu(user_id):
 async def cmd_start(message: types.Message):
     if not await check_maintenance(message, message.from_user.id): return
     
-    update_user_info(message.from_user)
+    update_user(message.from_user)
     await message.answer("🦊 <b>Добро пожаловать в FoxyZiHub!</b>\n\nЗдесь ты найдёшь мои игры.\nВыбери пункт меню ниже 👇",
                          parse_mode="HTML", reply_markup=main_menu(message.from_user.id))
 
@@ -176,16 +138,29 @@ async def show_profile(callback: types.CallbackQuery):
     await callback.answer()
     
     user = get_user(callback.from_user.id)
-    display_name = get_user_display_name(callback.from_user.id)
-    beta_status = "✅ Есть" if user["has_beta"] else "❌ Нет"
+    # Исправляем получение имени для отображения (если функция отсутствовала)
+    display_name = user['name']
+    
+    # Получаем префикс если есть
+    prefix_text = ""
+    prefixes = load_data("prefixes.json", {"list": []})["list"]
+    if user.get("active_prefix"):
+        for p in prefixes:
+            if p["id"] == user["active_prefix"]:
+                prefix_text = f"<b>{p['text']}</b> "
+                break
+    
+    display_name = f"{prefix_text}{user['name']}"
+    
+    beta_status = "✅ Есть" if user.get("has_beta") else "❌ Нет"
     
     text = (f"👤 <b>Твой профиль:</b>\n\n"
             f"🏷 <b>Ник:</b> {display_name}\n"
-            f"🔰 <b>Привилегия:</b> {user['privilege']}\n"
+            f"🔰 <b>Привилегия:</b> {user.get('privilege', ROLE_PLAYER)}\n"
             f"🧪 <b>Бета-тест:</b> {beta_status}")
 
     buttons = []
-    if user["unlocked_prefixes"]:
+    if user.get("unlocked_prefixes"):
         buttons.append([InlineKeyboardButton(text="🏷 Выбрать префикс", callback_data="profile_prefixes")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_home")])
     
@@ -199,12 +174,12 @@ async def choose_prefix_menu(callback: types.CallbackQuery):
     prefixes_db = load_data("prefixes.json", {"list": []})["list"]
     
     buttons = []
-    active = "✅ " if user["active_prefix"] is None else ""
+    active = "✅ " if user.get("active_prefix") is None else ""
     buttons.append([InlineKeyboardButton(text=f"{active}Без префикса", callback_data="set_my_prefix_none")])
     
-    for pid in user["unlocked_prefixes"]:
+    for pid in user.get("unlocked_prefixes", []):
         p_text = next((p["text"] for p in prefixes_db if p["id"] == pid), "???")
-        is_active = "✅ " if user["active_prefix"] == pid else ""
+        is_active = "✅ " if user.get("active_prefix") == pid else ""
         buttons.append([InlineKeyboardButton(text=f"{is_active}{p_text}", callback_data=f"set_my_prefix_{pid}")])
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="profile")])
@@ -243,7 +218,7 @@ async def show_games_list(callback: types.CallbackQuery):
     games = load_data("games.json", {"games": []})["games"]
     user = get_user(callback.from_user.id)
     
-    is_beta_tester = user["has_beta"] or user["privilege"] in [RANK_ADMIN, RANK_OWNER]
+    is_beta_tester = user.get("has_beta") or user.get("privilege") in [RANK_ADMIN, RANK_OWNER]
     
     buttons = []
     has_games = False
@@ -276,12 +251,12 @@ async def download_game(callback: types.CallbackQuery):
     access = game.get("access_type", ACCESS_PUBLIC)
     
     if access == ACCESS_BETA:
-        if not (user["has_beta"] or user["privilege"] in [RANK_ADMIN, RANK_OWNER]):
+        if not (user.get("has_beta") or user.get("privilege") in [RANK_ADMIN, RANK_OWNER]):
             await callback.answer("⛔ Только для Бета-тестеров!", show_alert=True)
             return
             
     if access == ACCESS_VIP:
-        if not user["privilege"] in [RANK_VIP, RANK_ADMIN, RANK_OWNER]:
+        if not user.get("privilege") in [RANK_VIP, RANK_ADMIN, RANK_OWNER]:
             await callback.answer("⛔ Только для VIP игроков!", show_alert=True)
             return
 
@@ -401,7 +376,7 @@ async def admin_user_list_paged(callback: types.CallbackQuery):
     current = user_list[start:end]
     buttons = []
     for uid, data in current:
-        buttons.append([InlineKeyboardButton(text=f"{data['name']} ({data['privilege']})", callback_data=f"edituser_{uid}")])
+        buttons.append([InlineKeyboardButton(text=f"{data['name']} ({data.get('privilege', 'User')})", callback_data=f"edituser_{uid}")])
     nav = []
     if page > 0: nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"admin_userlist_{page-1}"))
     if end < len(user_list): nav.append(InlineKeyboardButton(text="➡️", callback_data=f"admin_userlist_{page+1}"))
@@ -415,8 +390,8 @@ async def edit_user_menu(callback: types.CallbackQuery):
     users = load_data("users.json", {})
     u = users.get(uid)
     if not u: return
-    beta_txt = "✅ ВКЛ" if u['has_beta'] else "❌ ВЫКЛ"
-    text = (f"👤 <b>Настройка:</b> {u['name']}\n🔰 Привилегия: {u['privilege']}\n🧪 Бета-доступ: {beta_txt}\n🏷 Префикс ID: {u['active_prefix']}")
+    beta_txt = "✅ ВКЛ" if u.get('has_beta') else "❌ ВЫКЛ"
+    text = (f"👤 <b>Настройка:</b> {u['name']}\n🔰 Привилегия: {u.get('privilege')}\n🧪 Бета-доступ: {beta_txt}\n🏷 Префикс ID: {u.get('active_prefix')}")
     kb = [
         [InlineKeyboardButton(text="🔰 Изменить Привилегию", callback_data=f"setpriv_{uid}")],
         [InlineKeyboardButton(text=f"🧪 Бета-тест: {beta_txt}", callback_data=f"togglebeta_{uid}")],
@@ -457,12 +432,20 @@ async def save_privilege(callback: types.CallbackQuery):
 async def toggle_beta(callback: types.CallbackQuery):
     uid = callback.data.split("_")[1]
     users = load_data("users.json", {})
-    users[uid]["has_beta"] = not users[uid]["has_beta"]
+    new_beta = not users[uid].get("has_beta", False)
+    users[uid]["has_beta"] = new_beta
     save_data("users.json", users)
     await callback.answer("Бета-доступ изменен")
-    
-    status = "✅ ВКЛ" if users[uid]["has_beta"] else "❌ ВЫКЛ"
+    status = "✅ ВКЛ" if new_beta else "❌ ВЫКЛ"
     try: await bot.send_message(uid, f"🔔 <b>Уведомление!</b>\n\nБета-доступ: {status}", parse_mode="HTML")
     except: pass
-    
-    callback
+    callback.data = f"edituser_{uid}" 
+    await edit_user_menu(callback)
+
+@dp.callback_query(F.data.startswith("manageprefixes_"))
+async def manage_user_prefixes(callback: types.CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("Только Главный Лис управляет префиксами", show_alert=True)
+        return
+    uid 
+
