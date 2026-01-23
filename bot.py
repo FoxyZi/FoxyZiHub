@@ -192,8 +192,9 @@ def main_menu(user_id):
         [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile")],
         [InlineKeyboardButton(text="🎮 Список игр", callback_data="games_list")]
     ]
+    # ВСТАВЛЯЕМ ИВЕНТ МЕЖДУ ПРОФИЛЕМ И ИГРАМИ (ИНДЕКС 1)
     if CURRENT_EVENT_NAME:
-        buttons.insert(0, [InlineKeyboardButton(text=CURRENT_EVENT_NAME, callback_data="event_start")])
+        buttons.insert(1, [InlineKeyboardButton(text=CURRENT_EVENT_NAME, callback_data="event_start")])
 
     if is_admin_or_owner(user_id):
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_open_menu")])
