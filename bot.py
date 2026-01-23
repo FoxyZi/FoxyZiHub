@@ -32,13 +32,15 @@ ACCESS_BETA = "beta"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# ГЛАВНЫЙ РОУТЕР ДЛЯ ИВЕНТОВ
+BASE_EVENT_ROUTER = Router()
+dp.include_router(BASE_EVENT_ROUTER)
+
 temp_games = {} 
 admin_states = {} 
 
-# Глобальные переменные для ивента
-EVENT_ROUTER = None
-EVENT_BTN_NAME = None
-EVENT_LOADED = False
+CURRENT_EVENT_NAME = None
 
 # ═══════════════════════════════════════════
 # 🌍 ФЕЙКОВЫЙ СЕРВЕР
@@ -54,7 +56,7 @@ async def start_web_server():
     await site.start()
 
 # ═══════════════════════════════════════════
-# 📂 БАЗА ДАННЫХ И УТИЛИТЫ
+# 📂 БАЗА ДАННЫХ
 # ═══════════════════════════════════════════
 def load_data(filename, default):
     try:
@@ -72,6 +74,13 @@ def add_log(admin_name, text):
     if len(logs) > 200: logs.pop()
     save_data("logs.json", logs)
 
+# База названий ивентов
+def get_events_db():
+    return load_data("events_db.json", {"files": {}})
+
+def save_events_db(data):
+    save_data("events_db.json", data)
+
 async def check_maintenance(event, user_id):
     settings = load_data("settings.json", {"maintenance": False})
     if not settings.get("maintenance", False): return True
@@ -85,14 +94,7 @@ async def check_maintenance(event, user_id):
 def get_user(user_id):
     users = load_data("users.json", {})
     uid = str(user_id)
-    default_user = {
-        "name": "Неизвестный",
-        "username": "None",
-        "privilege": RANK_PLAYER,
-        "has_beta": False,
-        "unlocked_prefixes": [],
-        "active_prefix": None
-    }
+    default_user = {"name": "Unknown", "username": "None", "privilege": RANK_PLAYER, "has_beta": False, "unlocked_prefixes": [], "active_prefix": None}
     user = users.get(uid, default_user)
     if "role" in user:
         user["privilege"] = RANK_PLAYER
@@ -106,12 +108,7 @@ def get_user(user_id):
 def update_user_info(user_tg):
     users = load_data("users.json", {})
     uid = str(user_tg.id)
-    user_data = users.get(uid, {
-        "privilege": RANK_PLAYER,
-        "has_beta": False,
-        "unlocked_prefixes": [],
-        "active_prefix": None
-    })
+    user_data = users.get(uid, {"privilege": RANK_PLAYER, "has_beta": False, "unlocked_prefixes": [], "active_prefix": None})
     if user_tg.id == OWNER_ID: 
         user_data["privilege"] = RANK_OWNER
         user_data["has_beta"] = True
@@ -124,7 +121,7 @@ def find_user_in_db(query):
     users = load_data("users.json", {})
     query = query.replace("@", "").lower().strip()
     for uid, data in users.items():
-        if data.get("username", "").lower() == query: return uid, data
+        if str(data.get("username", "")).lower() == query: return uid, data
     return None, None
 
 def is_admin_or_owner(user_id):
@@ -136,45 +133,49 @@ def get_user_display_name(user_id):
     prefix_text = ""
     prefixes = load_data("prefixes.json", {"list": []})["list"]
     if user.get("active_prefix"):
-        found = False
         for p in prefixes:
             if p["id"] == user["active_prefix"]:
                 prefix_text = f"<b>{p['text']}</b> "
-                found = True
                 break
-        if not found:
-            users = load_data("users.json", {})
-            if str(user_id) in users:
-                users[str(user_id)]["active_prefix"] = None
-                save_data("users.json", users)
     return f"{prefix_text}{user['name']}"
 
 # ═══════════════════════════════════════════
-# 🧩 ЗАГРУЗЧИК ИВЕНТОВ
+# 🧩 ИВЕНТ МЕНЕДЖЕР
 # ═══════════════════════════════════════════
-async def load_event_module():
-    global EVENT_ROUTER, EVENT_BTN_NAME, EVENT_LOADED
-    event_path = "events/current.py"
+async def activate_event(filename):
+    global CURRENT_EVENT_NAME
     
-    if os.path.exists(event_path):
-        try:
-            spec = importlib.util.spec_from_file_location("current_event", event_path)
-            module = importlib.util.module_from_spec(spec)
-            sys.modules["current_event"] = module
-            spec.loader.exec_module(module)
+    BASE_EVENT_ROUTER.sub_routers.clear()
+    CURRENT_EVENT_NAME = None
+    
+    if not filename:
+        logger.info("ℹ️ Ивенты отключены.")
+        return True
+
+    file_path = f"events/{filename}"
+    if not os.path.exists(file_path):
+        logger.error(f"❌ Файл {filename} не найден!")
+        return False
+
+    try:
+        spec = importlib.util.spec_from_file_location(f"event_{uuid.uuid4().hex}", file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        
+        if hasattr(module, "router"):
+            BASE_EVENT_ROUTER.include_router(module.router)
+            CURRENT_EVENT_NAME = getattr(module, "BUTTON_NAME", "🎉 ИВЕНТ")
+            logger.info(f"✅ Ивент '{CURRENT_EVENT_NAME}' ({filename}) активирован!")
             
-            if hasattr(module, "router"):
-                EVENT_ROUTER = module.router
-                dp.include_router(EVENT_ROUTER)
-                EVENT_BTN_NAME = getattr(module, "BUTTON_NAME", "🎉 ИВЕНТ")
-                EVENT_LOADED = True
-                logger.info(f"✅ Ивент '{EVENT_BTN_NAME}' загружен в память.")
-            else:
-                logger.warning("⚠️ В events/current.py нет объекта 'router'")
-        except Exception as e:
-            logger.error(f"❌ Ошибка импорта ивента: {e}")
-    else:
-        logger.info("💤 Файл ивента не найден.")
+            settings = load_data("settings.json", {})
+            settings["active_event_file"] = filename
+            save_data("settings.json", settings)
+            return True
+        else:
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки: {e}")
+        return False
 
 # ═══════════════════════════════════════════
 # 🏠 ГЛАВНОЕ МЕНЮ
@@ -184,13 +185,8 @@ def main_menu(user_id):
         [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile")],
         [InlineKeyboardButton(text="🎮 Список игр", callback_data="games_list")]
     ]
-    
-    # ЛОГИКА ОТОБРАЖЕНИЯ ИВЕНТА
-    # 1. Файл должен быть загружен (EVENT_LOADED = True)
-    # 2. В настройках должно быть включено (event_active = True)
-    settings = load_data("settings.json", {"event_active": False})
-    if EVENT_LOADED and settings.get("event_active", False):
-        buttons.insert(0, [InlineKeyboardButton(text=EVENT_BTN_NAME, callback_data="event_start")])
+    if CURRENT_EVENT_NAME:
+        buttons.insert(0, [InlineKeyboardButton(text=CURRENT_EVENT_NAME, callback_data="event_start")])
 
     if is_admin_or_owner(user_id):
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_open_menu")])
@@ -217,13 +213,9 @@ async def show_profile(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
     display_name = get_user_display_name(callback.from_user.id)
     beta_status = "✅ Есть" if user.get("has_beta") else "❌ Нет"
-    text = (f"👤 <b>Твой профиль:</b>\n\n"
-            f"🏷 <b>Ник:</b> {display_name}\n"
-            f"🔰 <b>Привилегия:</b> {user.get('privilege', RANK_PLAYER)}\n"
-            f"🧪 <b>Бета-тест:</b> {beta_status}")
+    text = (f"👤 <b>Твой профиль:</b>\n\n🏷 <b>Ник:</b> {display_name}\n🔰 <b>Привилегия:</b> {user.get('privilege', RANK_PLAYER)}\n🧪 <b>Бета-тест:</b> {beta_status}")
     buttons = []
-    if user.get("unlocked_prefixes"):
-        buttons.append([InlineKeyboardButton(text="🏷 Выбрать префикс", callback_data="profile_prefixes")])
+    if user.get("unlocked_prefixes"): buttons.append([InlineKeyboardButton(text="🏷 Выбрать префикс", callback_data="profile_prefixes")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_home")])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -272,7 +264,6 @@ async def show_games_list(callback: types.CallbackQuery):
     user = get_user(callback.from_user.id)
     is_beta_tester = user.get("has_beta") or user.get("privilege") in [RANK_ADMIN, RANK_OWNER]
     buttons = []
-    has_games = False
     for i, game in enumerate(games):
         access = game.get("access_type", ACCESS_PUBLIC)
         if access == ACCESS_BETA and not is_beta_tester: continue
@@ -280,9 +271,8 @@ async def show_games_list(callback: types.CallbackQuery):
         if access == ACCESS_BETA: icon = "🧪"
         elif access == ACCESS_VIP: icon = "💎"
         buttons.append([InlineKeyboardButton(text=f"{icon} {game['name']}", callback_data=f"dl_{i}")])
-        has_games = True
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_home")])
-    text = "🎮 <b>Список игр:</b>" if has_games else "😔 <b>Игр пока нет.</b>"
+    text = "🎮 <b>Список игр:</b>" if buttons else "😔 <b>Игр пока нет.</b>"
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data.startswith("dl_"))
@@ -332,7 +322,7 @@ async def open_admin_panel(message: types.Message, edit=False):
     ]
     if uid == OWNER_ID:
         buttons.insert(1, [InlineKeyboardButton(text="🏷 Настройка Префиксов", callback_data="admin_prefixes_menu")])
-        buttons.insert(2, [InlineKeyboardButton(text="🎉 Управление Ивентом", callback_data="admin_event_mgr")]) # НОВАЯ КНОПКА
+        buttons.insert(2, [InlineKeyboardButton(text="🎉 Управление Ивентом", callback_data="admin_event_mgr")])
         buttons.append([InlineKeyboardButton(text="💾 Настройки бота", callback_data="admin_core")])
         
     buttons.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")])
@@ -354,49 +344,75 @@ async def admin_back_main(callback: types.CallbackQuery):
     await open_admin_panel(callback.message, edit=True)
 
 # ═══════════════════════════════════════════
-# 🎉 УПРАВЛЕНИЕ ИВЕНТОМ (НОВОЕ)
+# 🎉 УПРАВЛЕНИЕ ИВЕНТОМ (БИБЛИОТЕКА)
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "admin_event_mgr")
 async def admin_event_manager(callback: types.CallbackQuery):
     if callback.from_user.id != OWNER_ID: return
     await callback.answer()
     
-    settings = load_data("settings.json", {"event_active": False})
-    is_active = settings.get("event_active", False)
+    settings = load_data("settings.json", {})
+    active_file = settings.get("active_event_file", None)
+    events_db = get_events_db()["files"]
     
-    status_icon = "🟢 ВКЛЮЧЕН" if is_active else "🔴 ВЫКЛЮЧЕН"
+    active_name = events_db.get(active_file, "Неизвестный") if active_file else "🔴 Выключен"
     
-    # Проверка наличия файла
-    file_status = "✅ Файл загружен" if EVENT_LOADED else "❌ Файл не найден"
-    event_name = EVENT_BTN_NAME if EVENT_LOADED else "---"
+    text = (f"🎉 <b>Управление Ивентами</b>\n\n"
+            f"Текущий статус: <b>{active_name}</b>\n\n"
+            f"Загрузи скрипт с подписью, чтобы добавить в библиотеку.")
     
-    text = (f"🎉 <b>Управление Ивентом</b>\n\n"
-            f"📂 Статус файла: {file_status}\n"
-            f"🏷 Название: {event_name}\n"
-            f"⚡ Состояние: <b>{status_icon}</b>\n\n"
-            f"<i>Чтобы ивент работал, файл events/current.py должен существовать.</i>")
-    
-    kb_buttons = []
-    if EVENT_LOADED:
-        btn_text = "🔴 Выключить" if is_active else "🟢 Включить"
-        kb_buttons.append([InlineKeyboardButton(text=btn_text, callback_data="event_toggle")])
-    
-    kb_buttons.append([InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back")])
-    
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
+    buttons = [
+        [InlineKeyboardButton(text="📂 Выбрать из библиотеки", callback_data="event_library")],
+        [InlineKeyboardButton(text="🔴 Остановить ивент", callback_data="event_stop")],
+        [InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back")]
+    ]
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@dp.callback_query(F.data == "event_toggle")
-async def event_toggle_handler(callback: types.CallbackQuery):
+@dp.callback_query(F.data == "event_library")
+async def event_library_list(callback: types.CallbackQuery):
     if callback.from_user.id != OWNER_ID: return
-    if not EVENT_LOADED:
-        await callback.answer("Файл ивента не найден!", show_alert=True)
-        return
-        
-    settings = load_data("settings.json", {"event_active": False})
-    settings["event_active"] = not settings.get("event_active", False)
-    save_data("settings.json", settings)
+    await callback.answer()
     
-    await callback.answer("Состояние ивента изменено!")
+    events_db = get_events_db()["files"]
+    
+    if not events_db:
+        await callback.message.edit_text("📂 <b>Библиотека пуста.</b>\nЗагрузи .py файл с подписью.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙", callback_data="admin_event_mgr")]]))
+        return
+
+    buttons = []
+    for filename, display_name in events_db.items():
+        if os.path.exists(f"events/{filename}"):
+            buttons.append([InlineKeyboardButton(text=f"▶️ {display_name}", callback_data=f"event_launch_{filename}")])
+        else:
+            # Если файл пропал
+            buttons.append([InlineKeyboardButton(text=f"⚠️ {display_name} (Файл утерян)", callback_data="ignore")])
+            
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_event_mgr")])
+    await callback.message.edit_text("📂 <b>Библиотека Ивентов:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("event_launch_"))
+async def event_launch_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != OWNER_ID: return
+    filename = callback.data.split("event_launch_")[1]
+    
+    if await activate_event(filename):
+        await callback.answer("✅ Ивент запущен!")
+    else:
+        await callback.answer("❌ Ошибка запуска!", show_alert=True)
+        
+    await admin_event_manager(callback)
+
+@dp.callback_query(F.data == "event_stop")
+async def event_stop_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != OWNER_ID: return
+    await activate_event(None)
+    
+    settings = load_data("settings.json", {})
+    if "active_event_file" in settings:
+        del settings["active_event_file"]
+        save_data("settings.json", settings)
+        
+    await callback.answer("🛑 Ивент остановлен")
     await admin_event_manager(callback)
 
 # ═══════════════════════════════════════════
@@ -508,6 +524,7 @@ async def save_privilege(callback: types.CallbackQuery):
     if code == "player": new = RANK_PLAYER
     elif code == "vip": new = RANK_VIP
     elif code == "admin": new = RANK_ADMIN
+    else: return
     users[uid]["privilege"] = new
     save_data("users.json", users)
     add_log(callback.from_user.full_name, f"Привилегия {users[uid]['name']} -> {new}")
@@ -567,10 +584,8 @@ async def toggle_user_prefix(callback: types.CallbackQuery):
 async def admin_core_menu(callback: types.CallbackQuery):
     if callback.from_user.id != OWNER_ID: return
     await callback.answer()
-    
     settings = load_data("settings.json", {"maintenance": False})
     m_text = "🟢 Выключить Тех. работы" if settings["maintenance"] else "🔴 Включить Тех. работы"
-    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=m_text, callback_data="toggle_maintenance")],
         [InlineKeyboardButton(text="📥 Скачать Бэкап (Все)", callback_data="core_backup_zip")],
@@ -594,11 +609,17 @@ async def toggle_maintenance_callback(callback: types.CallbackQuery):
 async def download_backup_zip(callback: types.CallbackQuery):
     if callback.from_user.id != OWNER_ID: return
     await callback.answer("Готовлю архив...")
-    files = ["users.json", "games.json", "logs.json", "prefixes.json", "settings.json"]
+    files = ["users.json", "games.json", "logs.json", "prefixes.json", "settings.json", "events_db.json"]
     zip_name = "foxyzihub_backup.zip"
     with zipfile.ZipFile(zip_name, "w", zipfile.ZIP_DEFLATED) as zf:
         for fname in files:
             if os.path.exists(fname): zf.write(fname, arcname=fname)
+        # Бэкап ивентов
+        if os.path.exists("events"):
+            for root, dirs, files_in_dir in os.walk("events"):
+                for file in files_in_dir:
+                    if file.endswith(".py") and file != "__init__.py":
+                        zf.write(os.path.join(root, file), arcname=os.path.join("events", file))
     await bot.send_document(callback.message.chat.id, FSInputFile(zip_name), caption="💾 foxizihub_backup.zip")
 
 @dp.callback_query(F.data == "core_download_logs")
@@ -657,12 +678,10 @@ async def edit_game_menu(callback: types.CallbackQuery):
     idx = int(callback.data.split("_")[1])
     games = load_data("games.json", {"games": []})["games"]
     game = games[idx]
-    
     access = game.get("access_type", ACCESS_PUBLIC)
     status_text = "👤 Публичная"
     if access == ACCESS_BETA: status_text = "🧪 Бета-тест"
     if access == ACCESS_VIP: status_text = "💎 VIP"
-    
     text = (f"🎮 <b>Редактирование:</b>\n\n🏷 <b>Название:</b> {game['name']}\n📝 <b>Описание:</b> {game['description']}\n👁 <b>{status_text}</b>")
     kb = [
         [InlineKeyboardButton(text="✏️ Название", callback_data=f"changename_{idx}"), InlineKeyboardButton(text="📝 Описание", callback_data=f"changedesc_{idx}")],
@@ -713,7 +732,6 @@ async def finish_adding(callback: types.CallbackQuery):
         temp_games.pop(uid, None)
         await callback.message.delete()
         return
-    
     game_data = temp_games.get(uid)
     game_data["access_type"] = action
     data = load_data("games.json", {"games": []})
@@ -722,40 +740,6 @@ async def finish_adding(callback: types.CallbackQuery):
     add_log(callback.from_user.full_name, f"Добавил игру ({action}): {game_data['name']}")
     temp_games.pop(uid, None)
     await callback.message.edit_text(f"✅ Игра добавлена!", parse_mode="HTML")
-
-# ═══════════════════════════════════════════
-# 📜 ЛОГИ (Только просмотр)
-# ═══════════════════════════════════════════
-@dp.callback_query(F.data.startswith("admin_logs_"))
-async def show_logs(callback: types.CallbackQuery):
-    if not is_admin_or_owner(callback.from_user.id): return
-    await callback.answer()
-    
-    page = int(callback.data.split("_")[2])
-    logs = load_data("logs.json", [])
-    
-    if not logs:
-        await callback.message.edit_text("📜 <b>Логи пусты.</b>", parse_mode="HTML", 
-                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back")]]))
-        return
-
-    items_per_page = 10
-    start = page * items_per_page
-    end = start + items_per_page
-    current_logs = logs[start:end]
-    
-    text = f"📜 <b>Логи действий (Стр. {page + 1}):</b>\n\n"
-    text += "\n\n".join(current_logs)
-    
-    buttons = []
-    nav_buttons = []
-    if page > 0: nav_buttons.append(InlineKeyboardButton(text="⬅️ Туда", callback_data=f"admin_logs_{page-1}"))
-    if end < len(logs): nav_buttons.append(InlineKeyboardButton(text="Сюда ➡️", callback_data=f"admin_logs_{page+1}"))
-        
-    if nav_buttons: buttons.append(nav_buttons)
-    buttons.append([InlineKeyboardButton(text="🔙 В админку", callback_data="admin_back")])
-    
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 # ═══════════════════════════════════════════
 # ОБРАБОТЧИК ВВОДА (ГЛАВНЫЙ)
@@ -767,10 +751,29 @@ async def handle_input(message: types.Message):
     # Загрузка файлов (Только Лис)
     if message.document and message.from_user.id == OWNER_ID:
         state = admin_states.get(OWNER_ID)
+        
+        # ЗАГРУЗКА ИВЕНТА (.py с подписью)
+        if message.document.file_name.endswith(".py") and message.caption and "|" in message.caption:
+            event_title = message.caption.split("|")[0].strip()
+            
+            # Сохраняем в events/
+            if not os.path.exists("events"): os.makedirs("events")
+            file_name = f"event_{uuid.uuid4().hex[:6]}.py"
+            file = await bot.get_file(message.document.file_id)
+            await bot.download_file(file.file_path, f"events/{file_name}")
+            
+            # Сохраняем в базу имен
+            db = get_events_db()
+            db["files"][file_name] = event_title
+            save_events_db(db)
+            
+            await message.delete()
+            await message.answer(f"🎉 Ивент <b>{event_title}</b> добавлен в библиотеку!", parse_mode="HTML")
+            return
+
         if state and state.get("type") in ["upload_backup", "upload_prefixes"]:
             file_type = state.get("type")
             msg_id = state.get("msg_id")
-            
             try: await message.delete()
             except: pass
 
@@ -780,9 +783,14 @@ async def handle_input(message: types.Message):
                 await bot.download_file(file.file_path, "import_backup.zip")
                 try:
                     with zipfile.ZipFile("import_backup.zip", "r") as zf:
-                        for member in ["users.json", "games.json", "logs.json", "prefixes.json", "settings.json"]:
+                        for member in ["users.json", "games.json", "logs.json", "prefixes.json", "settings.json", "events_db.json"]:
                             try: zf.extract(member, ".")
                             except KeyError: pass
+                        # Распаковка ивентов
+                        for member in zf.namelist():
+                            if member.startswith("events/"):
+                                zf.extract(member, ".")
+                                
                     admin_states[OWNER_ID] = None
                     try: await bot.edit_message_text(chat_id=message.chat.id, message_id=msg_id, text="✅ Бэкап восстановлен!", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💾 Настройки", callback_data="admin_core")]]))
                     except: pass
@@ -877,8 +885,13 @@ async def delete_game_direct(callback: types.CallbackQuery):
 # ЗАПУСК
 # ═══════════════════════════════════════════
 async def main():
-    logger.info("🦊 FoxyZiHub v7.0 (Event Switch) запущен!")
-    await load_event_module()
+    logger.info("🦊 FoxyZiHub v9.0 (Event Library) запущен!")
+    
+    settings = load_data("settings.json", {})
+    active_file = settings.get("active_event_file")
+    if active_file:
+        await activate_event(active_file)
+
     try:
         await start_web_server()
         await dp.start_polling(bot)
