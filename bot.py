@@ -41,6 +41,7 @@ temp_games = {}
 admin_states = {} 
 
 CURRENT_EVENT_NAME = None
+CURRENT_EVENT_MODULE = None  # <-- НОВОЕ: Храним сам модуль ивента
 
 # ═══════════════════════════════════════════
 # 🌍 ФЕЙКОВЫЙ СЕРВЕР
@@ -150,10 +151,11 @@ def get_user_display_name(user_id):
 # 🧩 ИВЕНТ МЕНЕДЖЕР
 # ═══════════════════════════════════════════
 async def activate_event(filename):
-    global CURRENT_EVENT_NAME
+    global CURRENT_EVENT_NAME, CURRENT_EVENT_MODULE
     
     BASE_EVENT_ROUTER.sub_routers.clear()
     CURRENT_EVENT_NAME = None
+    CURRENT_EVENT_MODULE = None
     
     if not filename:
         logger.info("ℹ️ Ивенты отключены.")
@@ -172,6 +174,7 @@ async def activate_event(filename):
         if hasattr(module, "router"):
             BASE_EVENT_ROUTER.include_router(module.router)
             CURRENT_EVENT_NAME = getattr(module, "BUTTON_NAME", "🎉 ИВЕНТ")
+            CURRENT_EVENT_MODULE = module # <-- Сохраняем модуль для проверок
             logger.info(f"✅ Ивент '{CURRENT_EVENT_NAME}' ({filename}) активирован!")
             
             settings = load_data("settings.json", {})
@@ -192,9 +195,19 @@ def main_menu(user_id):
         [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile")],
         [InlineKeyboardButton(text="🎮 Список игр", callback_data="games_list")]
     ]
-    # ВСТАВЛЯЕМ ИВЕНТ МЕЖДУ ПРОФИЛЕМ И ИГРАМИ (ИНДЕКС 1)
+    
+    # ВСТАВЛЯЕМ ИВЕНТ (С УЧЕТОМ ВИДИМОСТИ)
     if CURRENT_EVENT_NAME:
-        buttons.insert(1, [InlineKeyboardButton(text=CURRENT_EVENT_NAME, callback_data="event_start")])
+        show_button = True
+        # Если в ивенте есть функция проверки видимости - используем её
+        if CURRENT_EVENT_MODULE and hasattr(CURRENT_EVENT_MODULE, "should_show_button"):
+            try:
+                show_button = CURRENT_EVENT_MODULE.should_show_button(user_id)
+            except Exception as e:
+                logger.error(f"Error checking event button: {e}")
+        
+        if show_button:
+            buttons.insert(1, [InlineKeyboardButton(text=CURRENT_EVENT_NAME, callback_data="event_start")])
 
     if is_admin_or_owner(user_id):
         buttons.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_open_menu")])
@@ -940,7 +953,7 @@ async def delete_game_direct(callback: types.CallbackQuery):
 # ЗАПУСК
 # ═══════════════════════════════════════════
 async def main():
-    logger.info("🦊 FoxyZiHub v10.0 (Events + Delete) запущен!")
+    logger.info("🦊 FoxyZiHub v10.1 (Smart Events) запущен!")
     
     settings = load_data("settings.json", {})
     active_file = settings.get("active_event_file")
