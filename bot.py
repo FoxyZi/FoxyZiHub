@@ -43,19 +43,16 @@ try:
             cred_dict = json.loads(FIREBASE_KEY_JSON)
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred, {
-                'databaseURL': f'https://foxyzihub-527c4-default-rtdb.europe-west1.firebasedatabase.app/' 
+                'databaseURL': 'https://foxyzihub-527c4-default-rtdb.europe-west1.firebasedatabase.app/' 
             })
             logger.info("✅ Подключение к Firebase успешно (через ENV)!")
         else:
-            # Аварийный вариант (локальный тест)
             if os.path.exists("firebase_key.json"):
                 cred = credentials.Certificate("firebase_key.json")
                 firebase_admin.initialize_app(cred, {
-                    'databaseURL': f'https://foxyzihub-527c4-default-rtdb.europe-west1.firebasedatabase.app/' 
+                    'databaseURL': 'https://foxyzihub-527c4-default-rtdb.europe-west1.firebasedatabase.app/' 
                 })
                 logger.info("✅ Подключение к Firebase успешно (через файл)!")
-            else:
-                logger.warning("⚠️ FIREBASE_KEY не найден! Бот будет работать без базы данных.")
 except Exception as e:
     logger.error(f"❌ Ошибка Firebase: {e}")
 
@@ -72,7 +69,7 @@ CURRENT_EVENT_NAME = None
 CURRENT_EVENT_MODULE = None
 
 # ═══════════════════════════════════════════
-# 🌍 ФЕЙКОВЫЙ СЕРВЕР (Для Render)
+# 🌍 ФЕЙКОВЫЙ СЕРВЕР
 # ═══════════════════════════════════════════
 async def health_check(request): return web.Response(text="🦊 FoxyZiHub Core is active!")
 async def start_web_server():
@@ -90,7 +87,6 @@ async def start_web_server():
 
 def load_data(filename, default):
     try:
-        # Firebase не любит точки в ключах, меняем . на _
         clean_name = filename.replace(".", "_") 
         ref = db.reference(f'storage/{clean_name}')
         data = ref.get()
@@ -109,7 +105,6 @@ def save_data(filename, data):
     except Exception as e:
         logger.error(f"Ошибка записи {filename} в Firebase: {e}")
 
-# Сохранение скриптов ивентов
 def save_script_to_db(filename, content):
     try:
         clean_name = filename.replace(".", "_")
@@ -282,6 +277,15 @@ def main_menu(user_id):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    # --- ФИКС БАЗЫ ДАННЫХ ---
+    if message.from_user.id == OWNER_ID:
+        # Принудительно создаем запись о файле в базе
+        # Используем твое имя файла
+        fix_data = {"files": {"event_d12583.py": "Викторина"}}
+        save_data("events_db.json", fix_data)
+        await message.answer("🔧 <b>СИСТЕМНОЕ СООБЩЕНИЕ:</b>\nБаза данных принудительно исправлена!\nПроверь библиотеку ивентов.", parse_mode="HTML")
+    # ------------------------
+
     if not await check_maintenance(message, message.from_user.id): return
     update_user_info(message.from_user)
     await message.answer("🦊 <b>Добро пожаловать в FoxyZiHub!</b>\n\nЗдесь ты найдёшь мои игры.\nВыбери пункт меню ниже 👇",
@@ -970,4 +974,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
