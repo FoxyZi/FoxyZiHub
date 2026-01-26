@@ -43,7 +43,7 @@ try:
             cred_dict = json.loads(FIREBASE_KEY_JSON)
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred, {
-                'databaseURL': f'https://{cred.project_id}-default-rtdb.firebaseio.com/' 
+                'databaseURL': f'https://foxyzihub-527c4-default-rtdb.europe-west1.firebasedatabase.app/' 
             })
             logger.info("✅ Подключение к Firebase успешно (через ENV)!")
         else:
@@ -51,7 +51,7 @@ try:
             if os.path.exists("firebase_key.json"):
                 cred = credentials.Certificate("firebase_key.json")
                 firebase_admin.initialize_app(cred, {
-                    'databaseURL': f'https://{cred.project_id}-default-rtdb.firebaseio.com/' 
+                    'databaseURL': f'https://foxyzihub-527c4-default-rtdb.europe-west1.firebasedatabase.app/' 
                 })
                 logger.info("✅ Подключение к Firebase успешно (через файл)!")
             else:
@@ -970,3 +970,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
