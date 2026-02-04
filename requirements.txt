@@ -1,5 +1,4 @@
 aiogram==3.24.0
 aiohttp==3.9.5
-pydantic==2.7.1
-magic-filter==1.0.12
+pydantic==2.6.4  # Более старая, но стабильная версия
 psycopg2-binary==2.9.9
