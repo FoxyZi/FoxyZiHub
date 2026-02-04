@@ -1,3 +1,0 @@
-aiogram==3.13.1
-aiohttp==3.9.5
-firebase-admin==6.4.0
